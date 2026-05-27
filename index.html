@@ -209,6 +209,18 @@
       margin-top: 10px;
     }
 
+    .queue-badge {
+      display: inline-block;
+      margin-top: 10px;
+      margin-left: 8px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: #ede9fe;
+      color: #5b21b6;
+      font-size: 13px;
+      font-weight: 900;
+    }
+
     .pending { background: #fef3c7; color: #92400e; }
     .approved { background: #dcfce7; color: #166534; }
     .rejected { background: #fee2e2; color: #991b1b; }
@@ -385,6 +397,20 @@
       transform: scale(1.08);
       background: #1e3a8a;
     }
+
+    #linkInputBox,
+    #textInputBox {
+      margin-top: 16px;
+    }
+
+    #requestType {
+      margin-bottom: 10px;
+    }
+
+    #songForm .btn.primary {
+      margin-top: 20px;
+      width: 100%;
+    }
   </style>
 </head>
 <body>
@@ -415,8 +441,24 @@
               <label>ชั้น / ห้อง</label>
               <input id="classRoom" placeholder="เช่น ม.3/1" required />
 
-              <label>ลิงก์เพลง (YouTube / Spotify)</label>
-              <input id="songLink" type="url" placeholder="https://youtube.com/..." required />
+              <label>เลือกวิธีขอเพลง</label>
+              <select id="requestType" onchange="toggleSongInputType()">
+                <option value="link">ใส่ลิงก์เพลง</option>
+                <option value="text">ใส่ชื่อเพลงและศิลปิน</option>
+              </select>
+
+              <div id="linkInputBox">
+                <label>ลิงก์เพลง (YouTube / Spotify)</label>
+                <input id="songLink" type="url" placeholder="https://youtube.com/..." />
+              </div>
+
+              <div id="textInputBox" class="hidden">
+                <label>ชื่อเพลง</label>
+                <input id="songName" placeholder="เช่น ฤดูร้อน" />
+
+                <label>ศิลปิน</label>
+                <input id="artistName" placeholder="เช่น Paradox" />
+              </div>
 
               <button class="btn primary" type="submit">ส่งคำขอเพลง</button>
             </form>
@@ -429,15 +471,15 @@
               ✅ เพลงที่ส่งเข้ามาต้องเหมาะสมกับบริบทของสถานศึกษา<br>
               ✅ แอดมินจะตรวจสอบความเหมาะสมของเพลงก่อนอนุมัติทุกครั้ง<br>
               ✅ คำขออาจถูกปฏิเสธหากเนื้อหาไม่เหมาะสมหรือไม่สามารถเปิดได้<br>
-              ✅ ตรวจสอบสถานะได้จากชื่อผู้ขอหรือ URL ลิงก์เพลง
+              ✅ ตรวจสอบสถานะได้จากชื่อผู้ขอ URL ลิงก์เพลง ชื่อเพลง หรือศิลปิน
             </div>
           </div>
         </section>
 
         <section id="statusPage" class="card hidden">
           <h2>ตรวจสอบสถานะคำขอเพลง</h2>
-          <label>ค้นหาด้วยชื่อผู้ขอ / ลิงก์เพลง</label>
-          <input id="statusSearch" placeholder="พิมพ์ชื่อผู้ขอหรือลิงก์เพลง..." oninput="renderStatusList()" />
+          <label>ค้นหาด้วยชื่อผู้ขอ / ลิงก์เพลง / ชื่อเพลง / ศิลปิน</label>
+          <input id="statusSearch" placeholder="พิมพ์ชื่อผู้ขอ ลิงก์เพลง ชื่อเพลง หรือศิลปิน..." oninput="renderStatusList()" />
           <div id="statusList" class="song-list"></div>
         </section>
 
@@ -494,11 +536,26 @@
     </div>
   </div>
 
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
+
   <script>
     const ADMIN_PASSWORD = 'MP1401';
-    const STORAGE_KEY = 'school_song_requests_v1';
-    const REQUEST_STATUS_KEY = 'school_song_request_open';
     const DISCORD_WEBHOOK_URL = 'https://discord.com/api/webhooks/1509160198302994482/9fnJRhR5hnShuj5HOQ1wEMDvRK8hZUjG5ioNXKUzFgaX9TockAZ6hDLvyzK0UOu_kTYI';
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyBWkU82Tww8NIqIPRqWDS6B09-hNLh0tyg",
+      authDomain: "mp-school-radio.firebaseapp.com",
+      projectId: "mp-school-radio",
+      storageBucket: "mp-school-radio.firebasestorage.app",
+      messagingSenderId: "338434145226",
+      appId: "1:338434145226:web:276bc11b4dd34ea4e76d33"
+    };
+
+    let db = null;
+    let requests = [];
+    let requestOpen = true;
+    let firebaseReady = false;
 
     const statusText = {
       pending: 'รออนุมัติ',
@@ -507,16 +564,44 @@
       played: 'เปิดเพลงแล้ว'
     };
 
+    function hasFirebaseConfig() {
+      return firebaseConfig.apiKey && !firebaseConfig.apiKey.includes('ใส่');
+    }
+
+    function initFirebase() {
+      if (!hasFirebaseConfig()) {
+        console.warn('ยังไม่ได้ตั้งค่า Firebase config');
+        renderStatusList();
+        renderAdminList();
+        return;
+      }
+
+      firebase.initializeApp(firebaseConfig);
+      db = firebase.firestore();
+      firebaseReady = true;
+
+      db.collection('settings').doc('requestStatus').onSnapshot(doc => {
+        if (!doc.exists) {
+          db.collection('settings').doc('requestStatus').set({ open: true });
+          return;
+        }
+        requestOpen = doc.data().open !== false;
+        renderAdminList();
+      });
+
+      db.collection('songRequests').orderBy('createdAtMs', 'desc').onSnapshot(snapshot => {
+        requests = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        renderStatusList();
+        renderAdminList();
+      });
+    }
+
     function isRequestOpen() {
-      return localStorage.getItem(REQUEST_STATUS_KEY) !== 'closed';
+      return requestOpen;
     }
 
     function getRequests() {
-      return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
-    }
-
-    function saveRequests(data) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+      return requests;
     }
 
     function showToast(text, title = 'แจ้งเตือน', type = 'big') {
@@ -543,37 +628,64 @@
       if (page === 'admin') renderAdminList();
     }
 
-    document.getElementById('songForm').addEventListener('submit', function(e) {
+    document.getElementById('songForm').addEventListener('submit', async function(e) {
       e.preventDefault();
+
+      if (!firebaseReady) {
+        showToast('ยังไม่ได้เชื่อม Firebase จึงยังซิงก์คิวข้ามเครื่องไม่ได้', '⚠️ ยังไม่พร้อมใช้งาน');
+        return;
+      }
+
       if (!isRequestOpen()) {
         showToast('ระบบปิดรับคำขอเพลงชั่วคราว กรุณาติดต่อแอดมินหรือกลับมาใหม่ภายหลัง', '🔴 ปิดรับคำขอเพลง');
         return;
       }
 
+      const requestType = document.getElementById('requestType').value;
+      const songLink = document.getElementById('songLink').value.trim();
+      const songName = document.getElementById('songName').value.trim();
+      const artistName = document.getElementById('artistName').value.trim();
+
+      if (requestType === 'link' && !songLink) {
+        showToast('กรุณาใส่ลิงก์เพลงก่อนส่งคำขอ', '⚠️ ข้อมูลไม่ครบ');
+        return;
+      }
+
+      if (requestType === 'text' && (!songName || !artistName)) {
+        showToast('กรุณาใส่ชื่อเพลงและศิลปินให้ครบก่อนส่งคำขอ', '⚠️ ข้อมูลไม่ครบ');
+        return;
+      }
+
       const request = {
-        id: String(Date.now()),
         studentName: document.getElementById('studentName').value.trim(),
         classRoom: document.getElementById('classRoom').value.trim(),
-        
-        songLink: document.getElementById('songLink').value.trim(),
-        
+        requestType,
+        songLink,
+        songName,
+        artistName,
         status: 'pending',
-        createdAt: new Date().toLocaleString('th-TH')
+        createdAt: new Date().toLocaleString('th-TH'),
+        createdAtMs: Date.now(),
+        approvedAt: null
       };
 
-      const requests = getRequests();
-      requests.unshift(request);
-      saveRequests(requests);
-      sendDiscordNotification(request);
-
-      this.reset();
-      showToast('ส่งคำขอเพลงเรียบร้อยแล้ว');
-      renderStatusList();
-      renderAdminList();
+      try {
+        await db.collection('songRequests').add(request);
+        sendDiscordNotification(request);
+        this.reset();
+        toggleSongInputType();
+        showToast('ส่งคำขอเพลงเรียบร้อยแล้ว');
+      } catch (error) {
+        console.error(error);
+        showToast('ส่งคำขอไม่สำเร็จ กรุณาตรวจสอบ Firebase', 'เกิดข้อผิดพลาด');
+      }
     });
 
     function songCard(item, isAdmin = false) {
+      const queueNumber = getQueueNumber(item.id);
+      const queueBadge = queueNumber ? `<span class="queue-badge">🎧 คิวที่ ${queueNumber}</span>` : '';
       const link = item.songLink ? `<br>🔗 <a href="${escapeHTML(item.songLink)}" target="_blank">เปิดลิงก์เพลง</a>` : '';
+      const songInfo = item.songName ? `<br>🎶 เพลง: ${escapeHTML(item.songName)}<br>🎤 ศิลปิน: ${escapeHTML(item.artistName || '-')}` : '';
       const adminButtons = isAdmin ? `
         <div class="btn-row">
           <button type="button" class="btn warning" data-action="status" data-id="${escapeHTML(item.id)}" data-status="pending">รออนุมัติ</button>
@@ -588,19 +700,30 @@
           <div class="song-title">🎵 คำขอเพลงจาก ${escapeHTML(item.studentName)}</div>
           <div class="meta">
             👤 ผู้ขอ: ${escapeHTML(item.studentName)} | 🏫 ${escapeHTML(item.classRoom)}<br>
-            🕒 ส่งเมื่อ: ${escapeHTML(item.createdAt)}
+            🕒 ส่งเมื่อ: ${escapeHTML(item.createdAt || '-')}
             ${link}
+            ${songInfo}
           </div>
           <span class="status ${item.status}">${statusText[item.status]}</span>
+          ${queueBadge}
           ${adminButtons}
         </div>
       `;
     }
 
+    function getQueueNumber(id) {
+      const approvedList = getRequests()
+        .filter(item => item.status === 'approved')
+        .sort((a, b) => (a.approvedAt || 0) - (b.approvedAt || 0));
+
+      const index = approvedList.findIndex(item => String(item.id) === String(id));
+      return index >= 0 ? index + 1 : null;
+    }
+
     function renderStatusList() {
       const keyword = (document.getElementById('statusSearch')?.value || '').toLowerCase();
       const list = getRequests().filter(item => {
-        const text = `${item.studentName} ${item.songLink}`.toLowerCase();
+        const text = `${item.studentName || ''} ${item.songLink || ''} ${item.songName || ''} ${item.artistName || ''}`.toLowerCase();
         return text.includes(keyword);
       });
 
@@ -609,27 +732,30 @@
         : `<div class="empty">ยังไม่มีรายการคำขอเพลง</div>`;
     }
 
+    function toggleSongInputType() {
+      const type = document.getElementById('requestType').value;
+      document.getElementById('linkInputBox').classList.toggle('hidden', type !== 'link');
+      document.getElementById('textInputBox').classList.toggle('hidden', type !== 'text');
+    }
+
     function sendDiscordNotification(request) {
       if (!DISCORD_WEBHOOK_URL || DISCORD_WEBHOOK_URL.includes('ใส่ลิงก์')) return;
 
       fetch(DISCORD_WEBHOOK_URL, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           content:
 `📢 มีคำขอเพลงใหม่ในระบบตามสายโรงเรียน
 
 👤 ผู้ขอ: ${request.studentName}
 🏫 ชั้น/ห้อง: ${request.classRoom}
-🔗 ลิงก์เพลง: ${request.songLink}
+${request.requestType === 'link' ? `🔗 ลิงก์เพลง: ${request.songLink}` : `🎶 เพลง: ${request.songName}
+🎤 ศิลปิน: ${request.artistName}`}
 🕒 เวลา: ${request.createdAt}
 📌 สถานะ: รออนุมัติ`
         })
-      }).catch(error => {
-        console.error('Discord notification error:', error);
-      });
+      }).catch(error => console.error('Discord notification error:', error));
     }
 
     function loginAdmin() {
@@ -653,10 +779,9 @@
       document.getElementById('adminPassword').value = '';
     }
 
-    function toggleRequestStatus() {
-      const current = isRequestOpen();
-      localStorage.setItem(REQUEST_STATUS_KEY, current ? 'closed' : 'open');
-      renderAdminList();
+    async function toggleRequestStatus() {
+      if (!firebaseReady) return;
+      await db.collection('settings').doc('requestStatus').set({ open: !isRequestOpen() }, { merge: true });
     }
 
     function renderAdminList() {
@@ -665,14 +790,14 @@
         document.getElementById('adminPanel').classList.remove('hidden');
       }
 
-      const requests = getRequests();
+      const allRequests = getRequests();
       const filter = document.getElementById('filterStatus')?.value || 'all';
-      const filtered = filter === 'all' ? requests : requests.filter(item => item.status === filter);
+      const filtered = filter === 'all' ? allRequests : allRequests.filter(item => item.status === filter);
 
-      document.getElementById('countAll').textContent = requests.length;
-      document.getElementById('countPending').textContent = requests.filter(i => i.status === 'pending').length;
-      document.getElementById('countApproved').textContent = requests.filter(i => i.status === 'approved').length;
-      document.getElementById('countPlayed').textContent = requests.filter(i => i.status === 'played').length;
+      document.getElementById('countAll').textContent = allRequests.length;
+      document.getElementById('countPending').textContent = allRequests.filter(i => i.status === 'pending').length;
+      document.getElementById('countApproved').textContent = allRequests.filter(i => i.status === 'approved').length;
+      document.getElementById('countPlayed').textContent = allRequests.filter(i => i.status === 'played').length;
 
       const toggleBtn = document.getElementById('toggleRequestBtn');
       if (toggleBtn) {
@@ -687,23 +812,20 @@
       }
     }
 
-    function updateStatus(id, status) {
-      const requests = getRequests().map(item => String(item.id) === String(id) ? { ...item, status } : item);
-      saveRequests(requests);
-      
-      renderAdminList();
-      renderStatusList();
+    async function updateStatus(id, status) {
+      if (!firebaseReady) return;
+      const item = getRequests().find(item => String(item.id) === String(id));
+      const data = { status };
+      if (status === 'approved' && item && !item.approvedAt) {
+        data.approvedAt = Date.now();
+      }
+      await db.collection('songRequests').doc(id).update(data);
     }
 
-    function deleteRequest(id) {
+    async function deleteRequest(id) {
       const ok = window.confirm('ต้องการลบคำขอนี้ใช่หรือไม่?');
-      if (!ok) return;
-
-      const requests = getRequests().filter(item => String(item.id) !== String(id));
-      saveRequests(requests);
-      
-      renderAdminList();
-      renderStatusList();
+      if (!ok || !firebaseReady) return;
+      await db.collection('songRequests').doc(id).delete();
     }
 
     document.getElementById('adminList').addEventListener('click', function(e) {
@@ -713,35 +835,18 @@
       const action = button.dataset.action;
       const id = button.dataset.id;
 
-      if (action === 'delete') {
-        deleteRequest(id);
-      }
-
-      if (action === 'status') {
-        updateStatus(id, button.dataset.status);
-      }
+      if (action === 'delete') deleteRequest(id);
+      if (action === 'status') updateStatus(id, button.dataset.status);
     });
 
-    function clearAllRequests() {
+    async function clearAllRequests() {
       const ok = window.confirm('ต้องการล้างข้อมูลคำขอเพลงทั้งหมดใช่หรือไม่?');
-      if (!ok) return;
+      if (!ok || !firebaseReady) return;
 
-      localStorage.removeItem(STORAGE_KEY);
-
-      const filterStatus = document.getElementById('filterStatus');
-      if (filterStatus) filterStatus.value = 'all';
-
-      const statusSearch = document.getElementById('statusSearch');
-      if (statusSearch) statusSearch.value = '';
-
-      document.getElementById('countAll').textContent = '0';
-      document.getElementById('countPending').textContent = '0';
-      document.getElementById('countApproved').textContent = '0';
-      document.getElementById('countPlayed').textContent = '0';
-      document.getElementById('adminList').innerHTML = `<div class="empty">ยังไม่มีรายการคำขอเพลง</div>`;
-      document.getElementById('statusList').innerHTML = `<div class="empty">ยังไม่มีรายการคำขอเพลง</div>`;
-
-      
+      const snapshot = await db.collection('songRequests').get();
+      const batch = db.batch();
+      snapshot.forEach(doc => batch.delete(doc.ref));
+      await batch.commit();
     }
 
     function escapeHTML(text) {
@@ -753,8 +858,7 @@
         .replaceAll("'", '&#039;');
     }
 
-    renderStatusList();
-    renderAdminList();
+    initFirebase();
   </script>
 </body>
 </html>
